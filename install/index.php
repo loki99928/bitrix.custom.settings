@@ -51,7 +51,7 @@ class custom_settings extends CModule
 
         $APPLICATION->IncludeAdminFile(
             Loc::getMessage('CUSTOM_SETTINGS_INSTALL_TITLE'),
-            $this->documentRoot . '/bitrix/modules/' . $this->MODULE_ID . '/install/step.php'
+            __DIR__ . '/step.php'
         );
 
         return true;
@@ -66,12 +66,12 @@ class custom_settings extends CModule
         if ($step < 2) {
             $APPLICATION->IncludeAdminFile(
                 Loc::getMessage('CUSTOM_SETTINGS_UNINSTALL_TITLE'),
-                $this->documentRoot . '/bitrix/modules/' . $this->MODULE_ID . '/install/unstep1.php'
+                __DIR__ . '/unstep1.php'
             );
         } elseif ($step === 2) {
             $this->UnInstallFiles();
 
-            if ($_REQUEST['savedata'] !== 'Y') {
+            if (($_REQUEST['savedata'] ?? '') !== 'Y') {
                 Option::delete($this->MODULE_ID);
             }
 
@@ -79,7 +79,7 @@ class custom_settings extends CModule
 
             $APPLICATION->IncludeAdminFile(
                 Loc::getMessage('CUSTOM_SETTINGS_UNINSTALL_TITLE'),
-                $this->documentRoot . '/bitrix/modules/' . $this->MODULE_ID . '/install/unstep2.php'
+                __DIR__ . '/unstep2.php'
             );
         }
 

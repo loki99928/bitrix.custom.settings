@@ -13,29 +13,87 @@ Loc::loadMessages(__FILE__);
 $module_id = 'custom.settings';
 $DESC_SUFFIX = '__desc';
 $TAB_SUFFIX = '__tab';
+$TYPE_SUFFIX = '__type';
+$VARIANTS_SUFFIX = '__variants';
 $TABS_KEY = '__tabs';
+
+$FIELD_TYPES = [
+    'text' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_TEXT'),
+    'textarea' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_TEXTAREA'),
+    'checkbox' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_CHECKBOX'),
+    'number' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_NUMBER'),
+    'password' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_PASSWORD'),
+    'select' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_SELECT'),
+];
 
 $RIGHT = $APPLICATION->GetGroupRight($module_id);
 if ($RIGHT < 'R') {
     $APPLICATION->AuthForm(Loc::getMessage('ACCESS_DENIED'));
 }
 
-// Получение вкладок
-function getTabs($module_id, $TABS_KEY) {
+function getTabs($module_id, $TABS_KEY)
+{
     $tabsJson = Option::get($module_id, $TABS_KEY, '[]');
     $tabs = json_decode($tabsJson, true);
     if (!is_array($tabs)) {
         $tabs = [];
     }
-    usort($tabs, function($a, $b) {
+    usort($tabs, function ($a, $b) {
         return ($a['sort'] ?? 500) - ($b['sort'] ?? 500);
     });
     return $tabs;
 }
 
-// Сохранение вкладок
-function saveTabs($module_id, $TABS_KEY, $tabs) {
+function saveTabs($module_id, $TABS_KEY, $tabs)
+{
     Option::set($module_id, $TABS_KEY, json_encode($tabs, JSON_UNESCAPED_UNICODE));
+}
+
+function normalizeFieldType($type, array $FIELD_TYPES)
+{
+    $type = (string)$type;
+    return isset($FIELD_TYPES[$type]) ? $type : 'textarea';
+}
+
+function normalizeOptionValue($type, $value)
+{
+    if ($type === 'checkbox') {
+        return ($value === 'Y' || $value === '1' || $value === 1 || $value === true) ? 'Y' : 'N';
+    }
+
+    if ($type === 'number') {
+        $value = trim((string)$value);
+        return $value === '' ? '' : (string)$value;
+    }
+
+    return (string)$value;
+}
+
+function formatOptionValueForDisplay($type, $value)
+{
+    switch ($type) {
+        case 'checkbox':
+            return $value === 'Y'
+                ? Loc::getMessage('CUSTOM_SETTINGS_CHECKBOX_YES')
+                : Loc::getMessage('CUSTOM_SETTINGS_CHECKBOX_NO');
+        case 'password':
+            return $value !== '' ? '••••••••' : '';
+        default:
+            return $value;
+    }
+}
+
+function parseSelectVariants($variantsRaw)
+{
+    $parts = preg_split('/[\r\n;]+/', (string)$variantsRaw);
+    $variants = [];
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if ($part !== '') {
+            $variants[] = $part;
+        }
+    }
+    return array_values(array_unique($variants));
 }
 
 // Обработка действий
@@ -46,15 +104,35 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
     switch ($action) {
         case 'save':
             $optionName = trim($_POST['option_name'] ?? '');
-            $optionValue = $_POST['option_value'] ?? '';
+            $optionType = normalizeFieldType($_POST['option_type'] ?? 'textarea', $FIELD_TYPES);
+            $rawValue = $_POST['option_value'] ?? '';
+            if (is_array($rawValue)) {
+                $rawValue = end($rawValue);
+            }
+            $optionValue = normalizeOptionValue($optionType, $rawValue);
             $optionDesc = trim($_POST['option_desc'] ?? '');
             $optionTab = trim($_POST['option_tab'] ?? '');
+            $optionVariants = trim($_POST['option_variants'] ?? '');
+
+            if ($optionType === 'select') {
+                $variants = parseSelectVariants($optionVariants);
+                $optionVariants = implode("\n", $variants);
+                if ($optionValue !== '' && !in_array($optionValue, $variants, true) && !empty($variants)) {
+                    $optionValue = $variants[0];
+                }
+            }
 
             if (!empty($optionName) && strpos($optionName, '__') === false) {
                 Option::set($module_id, $optionName, $optionValue);
                 Option::set($module_id, $optionName . $DESC_SUFFIX, $optionDesc);
                 Option::set($module_id, $optionName . $TAB_SUFFIX, $optionTab);
-                LocalRedirect($APPLICATION->GetCurPage() . '?saved=Y&active_tab=' . urlencode($optionTab));
+                Option::set($module_id, $optionName . $TYPE_SUFFIX, $optionType);
+                if ($optionType === 'select') {
+                    Option::set($module_id, $optionName . $VARIANTS_SUFFIX, $optionVariants);
+                } else {
+                    Option::delete($module_id, ['name' => $optionName . $VARIANTS_SUFFIX]);
+                }
+                LocalRedirect($APPLICATION->GetCurPage() . '?saved=Y&active_tab=' . urlencode($optionTab ?: '__no_tab'));
             }
             break;
 
@@ -65,6 +143,8 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
                 Option::delete($module_id, ['name' => $optionName]);
                 Option::delete($module_id, ['name' => $optionName . $DESC_SUFFIX]);
                 Option::delete($module_id, ['name' => $optionName . $TAB_SUFFIX]);
+                Option::delete($module_id, ['name' => $optionName . $TYPE_SUFFIX]);
+                Option::delete($module_id, ['name' => $optionName . $VARIANTS_SUFFIX]);
                 LocalRedirect($APPLICATION->GetCurPage() . '?deleted=Y&active_tab=' . urlencode($returnTab));
             }
             break;
@@ -73,11 +153,11 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
             $tabId = trim($_POST['tab_id'] ?? '');
             $tabName = trim($_POST['tab_name'] ?? '');
             $tabSort = (int)($_POST['tab_sort'] ?? 500);
-            $isNew = $_POST['is_new_tab'] === 'Y';
+            $isNew = ($_POST['is_new_tab'] ?? '') === 'Y';
 
             if (!empty($tabName)) {
                 $tabs = getTabs($module_id, $TABS_KEY);
-                
+
                 if ($isNew) {
                     $tabId = 'tab_' . time();
                     $tabs[] = ['id' => $tabId, 'name' => $tabName, 'sort' => $tabSort];
@@ -91,7 +171,7 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
                     }
                     unset($tab);
                 }
-                
+
                 saveTabs($module_id, $TABS_KEY, $tabs);
                 LocalRedirect($APPLICATION->GetCurPage() . '?tab_saved=Y&active_tab=__manage');
             }
@@ -101,19 +181,18 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
             $tabId = $_POST['tab_id'] ?? '';
             if (!empty($tabId)) {
                 $tabs = getTabs($module_id, $TABS_KEY);
-                $tabs = array_filter($tabs, function($tab) use ($tabId) {
+                $tabs = array_filter($tabs, function ($tab) use ($tabId) {
                     return $tab['id'] !== $tabId;
                 });
                 saveTabs($module_id, $TABS_KEY, array_values($tabs));
-                
-                // Сбрасываем привязку настроек к удалённой вкладке
+
                 $allOptions = Option::getForModule($module_id);
                 foreach ($allOptions as $name => $value) {
                     if (substr($name, -strlen($TAB_SUFFIX)) === $TAB_SUFFIX && $value === $tabId) {
                         Option::set($module_id, $name, '');
                     }
                 }
-                
+
                 LocalRedirect($APPLICATION->GetCurPage() . '?tab_deleted=Y&active_tab=__manage');
             }
             break;
@@ -124,7 +203,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 
 $APPLICATION->SetTitle(Loc::getMessage('CUSTOM_SETTINGS_PAGE_TITLE'));
 
-// Контекстное меню
 $aMenu = [
     [
         'TEXT' => Loc::getMessage('CUSTOM_SETTINGS_ADD_NEW'),
@@ -142,24 +220,21 @@ $aMenu = [
 $context = new CAdminContextMenu($aMenu);
 $context->Show();
 
-// Уведомления
-if ($_GET['saved'] === 'Y') {
+if (($_GET['saved'] ?? '') === 'Y') {
     CAdminMessage::ShowNote(Loc::getMessage('CUSTOM_SETTINGS_SAVED'));
 }
-if ($_GET['deleted'] === 'Y') {
+if (($_GET['deleted'] ?? '') === 'Y') {
     CAdminMessage::ShowNote(Loc::getMessage('CUSTOM_SETTINGS_DELETED'));
 }
-if ($_GET['tab_saved'] === 'Y') {
+if (($_GET['tab_saved'] ?? '') === 'Y') {
     CAdminMessage::ShowNote(Loc::getMessage('CUSTOM_SETTINGS_TAB_SAVED'));
 }
-if ($_GET['tab_deleted'] === 'Y') {
+if (($_GET['tab_deleted'] ?? '') === 'Y') {
     CAdminMessage::ShowNote(Loc::getMessage('CUSTOM_SETTINGS_TAB_DELETED'));
 }
 
-// Получаем вкладки
 $tabs = getTabs($module_id, $TABS_KEY);
 
-// Получаем все настройки модуля
 $allOptionsRaw = Option::getForModule($module_id);
 $allOptions = [];
 
@@ -167,17 +242,17 @@ foreach ($allOptionsRaw as $name => $value) {
     if (strpos($name, '__') !== false) {
         continue;
     }
-    
-    $descKey = $name . $DESC_SUFFIX;
-    $tabKey = $name . $TAB_SUFFIX;
+
+    $type = normalizeFieldType($allOptionsRaw[$name . $TYPE_SUFFIX] ?? 'textarea', $FIELD_TYPES);
     $allOptions[$name] = [
         'value' => $value,
-        'desc' => $allOptionsRaw[$descKey] ?? '',
-        'tab' => $allOptionsRaw[$tabKey] ?? '',
+        'desc' => $allOptionsRaw[$name . $DESC_SUFFIX] ?? '',
+        'tab' => $allOptionsRaw[$name . $TAB_SUFFIX] ?? '',
+        'type' => $type,
+        'variants' => $allOptionsRaw[$name . $VARIANTS_SUFFIX] ?? '',
     ];
 }
 
-// Группируем настройки по вкладкам
 $optionsByTab = ['__no_tab' => []];
 foreach ($tabs as $tab) {
     $optionsByTab[$tab['id']] = [];
@@ -191,8 +266,7 @@ foreach ($allOptions as $name => $data) {
     $optionsByTab[$tabId][$name] = $data;
 }
 
-// Определяем активную вкладку
-if (empty($activeTab)) {
+if ($activeTab === '') {
     if (!empty($tabs)) {
         $activeTab = $tabs[0]['id'];
     } else {
@@ -208,44 +282,95 @@ if (empty($activeTab)) {
     .custom-tabs li a:hover { background: #fff; }
     .custom-tabs li.active a { background: #fff; border-color: #e0e8ea; border-bottom-color: #fff; font-weight: bold; color: #000; }
     .custom-tabs li.tab-manage a { color: #666; font-style: italic; }
-    
+
     .tab-content { display: none; padding: 20px; background: #fff; border: 1px solid #e0e8ea; border-top: none; }
     .tab-content.active { display: block; }
-    
+
     .settings-table { width: 100%; border-collapse: collapse; }
     .settings-table th, .settings-table td { border: 1px solid #e0e8ea; padding: 10px; text-align: left; vertical-align: top; }
     .settings-table th { background: #f5f9f9; font-weight: bold; }
     .settings-table tr:hover { background: #f9fcfc; }
-    
+
     .add-form { display: none; background: #f5f9f9; padding: 20px; margin-bottom: 20px; border: 1px solid #e0e8ea; border-radius: 4px; }
     .add-form.visible { display: block; }
     .form-row { margin-bottom: 15px; }
     .form-row label { display: block; margin-bottom: 5px; font-weight: bold; }
-    .form-row input[type="text"], .form-row textarea, .form-row select { width: 100%; max-width: 500px; border: 1px solid #c8d3d5; border-radius: 3px; box-sizing: border-box; }
+    .form-row input[type="text"],
+    .form-row input[type="number"],
+    .form-row input[type="password"],
+    .form-row textarea,
+    .form-row select { width: 100%; max-width: 500px; border: 1px solid #c8d3d5; border-radius: 3px; box-sizing: border-box; padding: 6px 8px; }
     .form-row textarea { min-height: 80px; }
     .form-row small { color: #666; display: block; margin-top: 4px; }
     .form-row-inline { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
     .form-row-inline .form-row { margin-bottom: 0; flex: 1; min-width: 200px; }
     .form-row-inline .form-row.narrow { flex: 0 0 100px; min-width: 100px; }
     .form-row-inline .form-row.btn-row { flex: 0 0 auto; min-width: auto; }
-    
+
     .btn-action { padding: 5px 10px; margin-right: 5px; cursor: pointer; }
     .option-value { max-width: 350px; word-break: break-word; }
     .option-desc { color: #666; font-size: 12px; max-width: 200px; }
-    
+    .option-type { color: #666; font-size: 12px; white-space: nowrap; }
+
     .tabs-list { margin-top: 20px; }
     .tabs-list table { width: 100%; border-collapse: collapse; }
     .tabs-list th, .tabs-list td { border: 1px solid #e0e8ea; padding: 8px; text-align: left; }
     .tabs-list th { background: #f5f9f9; }
-    
+
     .no-options { color: #999; padding: 20px; text-align: center; }
     .tab-add-form { background: #fff; padding: 15px; border: 1px solid #e0e8ea; border-radius: 4px; margin-bottom: 20px; }
+    .checkbox-value-wrap { display: flex; align-items: center; gap: 8px; }
+
+    .usage-help { background: #fff; border: 1px solid #e0e8ea; border-radius: 4px; margin-bottom: 20px; }
+    .usage-help-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 16px; border: 0; background: #f5f9f9; cursor: pointer; text-align: left; font-size: 14px; font-weight: bold; color: #333; box-sizing: border-box; }
+    .usage-help-toggle:hover { background: #eef5f5; }
+    .usage-help-toggle .usage-help-arrow { color: #666; font-weight: normal; }
+    .usage-help-body { display: none; padding: 16px 20px 20px; border-top: 1px solid #e0e8ea; }
+    .usage-help.open .usage-help-body { display: block; }
+    .usage-help-body p { margin: 0 0 10px; color: #444; line-height: 1.45; }
+    .usage-help-body ul { margin: 0 0 14px; padding-left: 18px; color: #444; line-height: 1.5; }
+    .usage-help-body code, .usage-help-body pre { font-family: Consolas, Monaco, monospace; }
+    .usage-help-body code { background: #f0f4f5; padding: 1px 5px; border-radius: 2px; }
+    .usage-help-body pre { background: #f5f9f9; border: 1px solid #e0e8ea; border-radius: 3px; padding: 12px 14px; overflow: auto; margin: 0 0 14px; font-size: 12px; line-height: 1.5; white-space: pre; }
+    .usage-help-body h4 { margin: 16px 0 8px; font-size: 13px; }
+    .usage-help-body h4:first-child { margin-top: 0; }
 </style>
+
+<div class="usage-help" id="usageHelp">
+    <button type="button" class="usage-help-toggle" onclick="toggleUsageHelp()">
+        <span><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TITLE') ?></span>
+        <span class="usage-help-arrow" id="usageHelpArrow">▼</span>
+    </button>
+    <div class="usage-help-body">
+        <p><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_INTRO') ?></p>
+
+        <h4><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_BASIC_TITLE') ?></h4>
+        <pre><?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_USAGE_BASIC_CODE')) ?></pre>
+
+        <h4><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPES_TITLE') ?></h4>
+        <ul>
+            <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_TEXT') ?></li>
+            <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_CHECKBOX') ?></li>
+            <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_NUMBER') ?></li>
+            <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_SELECT') ?></li>
+        </ul>
+        <pre><?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPES_CODE')) ?></pre>
+
+        <h4><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TEMPLATE_TITLE') ?></h4>
+        <p><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TEMPLATE_NOTE') ?></p>
+        <pre><?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_USAGE_TEMPLATE_CODE')) ?></pre>
+
+        <h4><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_ALL_TITLE') ?></h4>
+        <pre><?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_USAGE_ALL_CODE')) ?></pre>
+
+        <p><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_NOTE') ?></p>
+    </div>
+</div>
 
 <!-- Форма добавления настройки -->
 <div id="addForm" class="add-form">
-    <h3><?= Loc::getMessage('CUSTOM_SETTINGS_ADD_OPTION') ?></h3>
-    <form method="POST" action="<?= $APPLICATION->GetCurPage() ?>">
+    <h3 id="addFormTitle"><?= Loc::getMessage('CUSTOM_SETTINGS_ADD_OPTION') ?></h3>
+    <form method="POST" action="<?= $APPLICATION->GetCurPage() ?>" id="optionForm">
         <?= bitrix_sessid_post() ?>
         <input type="hidden" name="action" value="save">
 
@@ -254,6 +379,22 @@ if (empty($activeTab)) {
             <input type="text" id="option_name" name="option_name" required
                    placeholder="<?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_NAME_HINT') ?>">
             <small><?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_NAME_NOTE') ?></small>
+        </div>
+
+        <div class="form-row">
+            <label for="option_type"><?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_TYPE') ?>:</label>
+            <select id="option_type" name="option_type" onchange="onTypeChange()">
+                <?php foreach ($FIELD_TYPES as $typeCode => $typeName): ?>
+                    <option value="<?= htmlspecialchars($typeCode) ?>"><?= htmlspecialchars($typeName) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <div class="form-row" id="variantsRow" style="display:none">
+            <label for="option_variants"><?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VARIANTS') ?>:</label>
+            <textarea id="option_variants" name="option_variants"
+                      placeholder="<?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VARIANTS_HINT') ?>"></textarea>
+            <small><?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VARIANTS_NOTE') ?></small>
         </div>
 
         <div class="form-row">
@@ -272,10 +413,12 @@ if (empty($activeTab)) {
                    placeholder="<?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_DESC_HINT') ?>">
         </div>
 
-        <div class="form-row">
+        <div class="form-row" id="valueRow">
             <label for="option_value"><?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VALUE') ?>:</label>
-            <textarea id="option_value" name="option_value"
-                      placeholder="<?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VALUE_HINT') ?>"></textarea>
+            <div id="valueControl">
+                <textarea id="option_value" name="option_value"
+                          placeholder="<?= Loc::getMessage('CUSTOM_SETTINGS_OPTION_VALUE_HINT') ?>"></textarea>
+            </div>
         </div>
 
         <div class="form-row">
@@ -300,27 +443,24 @@ if (empty($activeTab)) {
     </li>
 </ul>
 
-<!-- Содержимое вкладок -->
 <?php foreach ($tabs as $tab): ?>
     <div id="tab-<?= htmlspecialchars($tab['id']) ?>" class="tab-content <?= $activeTab === $tab['id'] ? 'active' : '' ?>">
         <?php if (!empty($optionsByTab[$tab['id']])): ?>
-            <?php renderOptionsTable($optionsByTab[$tab['id']], $tabs, $tab['id']); ?>
+            <?php renderOptionsTable($optionsByTab[$tab['id']], $FIELD_TYPES, $tab['id']); ?>
         <?php else: ?>
             <div class="no-options"><?= Loc::getMessage('CUSTOM_SETTINGS_TAB_EMPTY') ?></div>
         <?php endif; ?>
     </div>
 <?php endforeach; ?>
 
-<!-- Без категории -->
 <div id="tab-__no_tab" class="tab-content <?= $activeTab === '__no_tab' ? 'active' : '' ?>">
     <?php if (!empty($optionsByTab['__no_tab'])): ?>
-        <?php renderOptionsTable($optionsByTab['__no_tab'], $tabs, '__no_tab'); ?>
+        <?php renderOptionsTable($optionsByTab['__no_tab'], $FIELD_TYPES, '__no_tab'); ?>
     <?php else: ?>
         <div class="no-options"><?= Loc::getMessage('CUSTOM_SETTINGS_TAB_EMPTY') ?></div>
     <?php endif; ?>
 </div>
 
-<!-- Управление вкладками -->
 <div id="tab-__manage" class="tab-content <?= $activeTab === '__manage' ? 'active' : '' ?>">
     <div class="tab-add-form">
         <h4><?= Loc::getMessage('CUSTOM_SETTINGS_ADD_TAB_TITLE') ?></h4>
@@ -387,25 +527,40 @@ if (empty($activeTab)) {
 </div>
 
 <?php
-function renderOptionsTable($options, $tabs, $currentTab) {
+function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
+{
     ?>
     <table class="settings-table">
         <thead>
         <tr>
-            <th width="20%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_NAME') ?></th>
-            <th width="20%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_DESC') ?></th>
-            <th width="40%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_VALUE') ?></th>
+            <th width="16%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_NAME') ?></th>
+            <th width="12%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_TYPE') ?></th>
+            <th width="18%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_DESC') ?></th>
+            <th width="34%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_VALUE') ?></th>
             <th width="20%"><?= Loc::getMessage('CUSTOM_SETTINGS_COL_ACTIONS') ?></th>
         </tr>
         </thead>
         <tbody>
         <?php foreach ($options as $name => $data): ?>
+            <?php
+            $type = $data['type'] ?? 'textarea';
+            $displayValue = formatOptionValueForDisplay($type, $data['value']);
+            $editPayload = htmlspecialchars(json_encode([
+                'name' => $name,
+                'value' => $data['value'],
+                'desc' => $data['desc'],
+                'tab' => $data['tab'],
+                'type' => $type,
+                'variants' => $data['variants'] ?? '',
+            ], JSON_UNESCAPED_UNICODE), ENT_QUOTES);
+            ?>
             <tr>
                 <td><strong><?= htmlspecialchars($name) ?></strong></td>
+                <td class="option-type"><?= htmlspecialchars($FIELD_TYPES[$type] ?? $type) ?></td>
                 <td class="option-desc"><?= htmlspecialchars($data['desc']) ?></td>
-                <td class="option-value"><?= htmlspecialchars($data['value']) ?></td>
+                <td class="option-value"><?= htmlspecialchars($displayValue) ?></td>
                 <td>
-                    <button type="button" class="btn-action" onclick="editOption('<?= htmlspecialchars($name, ENT_QUOTES) ?>', '<?= htmlspecialchars($data['value'], ENT_QUOTES) ?>', '<?= htmlspecialchars($data['desc'], ENT_QUOTES) ?>', '<?= htmlspecialchars($data['tab'], ENT_QUOTES) ?>')">
+                    <button type="button" class="btn-action" onclick='editOption(<?= $editPayload ?>)'>
                         <?= Loc::getMessage('CUSTOM_SETTINGS_BTN_EDIT') ?>
                     </button>
                     <form method="POST" style="display:inline" onsubmit="return confirm('<?= Loc::getMessage('CUSTOM_SETTINGS_CONFIRM_DELETE') ?>')">
@@ -425,55 +580,134 @@ function renderOptionsTable($options, $tabs, $currentTab) {
 ?>
 
 <script>
+    var MSG = {
+        valueHint: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_OPTION_VALUE_HINT')) ?>,
+        checkboxYes: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_CHECKBOX_YES')) ?>,
+        addTitle: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_ADD_OPTION')) ?>,
+        editTitle: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_EDIT_OPTION')) ?>,
+        addTab: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_BTN_ADD_TAB')) ?>,
+        save: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_BTN_SAVE')) ?>
+    };
+
+    function toggleUsageHelp() {
+        var box = document.getElementById('usageHelp');
+        var arrow = document.getElementById('usageHelpArrow');
+        box.classList.toggle('open');
+        arrow.textContent = box.classList.contains('open') ? '▲' : '▼';
+    }
+
     function switchTab(tabId) {
-        // Скрыть все вкладки
-        document.querySelectorAll('.tab-content').forEach(function(el) {
+        document.querySelectorAll('.tab-content').forEach(function (el) {
             el.classList.remove('active');
         });
-        document.querySelectorAll('.custom-tabs li').forEach(function(el) {
+        document.querySelectorAll('.custom-tabs li').forEach(function (el) {
             el.classList.remove('active');
         });
-        
-        // Показать выбранную
+
         var tabContent = document.getElementById('tab-' + tabId);
         if (tabContent) {
             tabContent.classList.add('active');
         }
-        
-        // Активировать пункт меню
-        document.querySelectorAll('.custom-tabs li a').forEach(function(el) {
-            if (el.getAttribute('onclick').indexOf("'" + tabId + "'") !== -1) {
+
+        document.querySelectorAll('.custom-tabs li a').forEach(function (el) {
+            if (el.getAttribute('onclick') && el.getAttribute('onclick').indexOf("'" + tabId + "'") !== -1) {
                 el.parentElement.classList.add('active');
             }
         });
-        
-        // Сохранить в URL без перезагрузки
+
         var url = new URL(window.location.href);
         url.searchParams.set('active_tab', tabId);
         window.history.replaceState({}, '', url);
     }
 
+    function getCurrentValue() {
+        var checkbox = document.getElementById('option_value_checkbox');
+        if (checkbox) {
+            return checkbox.checked ? 'Y' : 'N';
+        }
+        var field = document.getElementById('option_value');
+        return field ? field.value : '';
+    }
+
+    function renderValueControl(type, value, variantsRaw) {
+        var wrap = document.getElementById('valueControl');
+        var html = '';
+
+        if (type === 'checkbox') {
+            html =
+                '<div class="checkbox-value-wrap">' +
+                '<input type="hidden" name="option_value" value="N">' +
+                '<input type="checkbox" id="option_value_checkbox" name="option_value" value="Y"' +
+                (value === 'Y' ? ' checked' : '') + '>' +
+                '<label for="option_value_checkbox">' + MSG.checkboxYes + '</label>' +
+                '</div>';
+        } else if (type === 'select') {
+            var variants = String(variantsRaw || '').split(/[\r\n;]+/).map(function (v) {
+                return v.trim();
+            }).filter(Boolean);
+            html = '<select id="option_value" name="option_value">';
+            if (!variants.length) {
+                html += '<option value="">—</option>';
+            }
+            variants.forEach(function (variant) {
+                html += '<option value="' + escapeHtml(variant) + '"' +
+                    (variant === value ? ' selected' : '') + '>' + escapeHtml(variant) + '</option>';
+            });
+            html += '</select>';
+        } else if (type === 'text') {
+            html = '<input type="text" id="option_value" name="option_value" value="' + escapeAttr(value) +
+                '" placeholder="' + escapeAttr(MSG.valueHint) + '">';
+        } else if (type === 'number') {
+            html = '<input type="number" id="option_value" name="option_value" value="' + escapeAttr(value) +
+                '" placeholder="' + escapeAttr(MSG.valueHint) + '">';
+        } else if (type === 'password') {
+            html = '<input type="password" id="option_value" name="option_value" value="' + escapeAttr(value) +
+                '" placeholder="' + escapeAttr(MSG.valueHint) + '" autocomplete="new-password">';
+        } else {
+            html = '<textarea id="option_value" name="option_value" placeholder="' + escapeAttr(MSG.valueHint) + '">' +
+                escapeHtml(value) + '</textarea>';
+        }
+
+        wrap.innerHTML = html;
+    }
+
+    function onTypeChange() {
+        var type = document.getElementById('option_type').value;
+        var variantsRow = document.getElementById('variantsRow');
+        variantsRow.style.display = (type === 'select') ? 'block' : 'none';
+        renderValueControl(type, getCurrentValue(), document.getElementById('option_variants').value);
+    }
+
     function showAddForm() {
         document.getElementById('addForm').classList.add('visible');
+        document.getElementById('addFormTitle').textContent = MSG.addTitle;
         document.getElementById('option_name').focus();
         document.getElementById('option_name').removeAttribute('readonly');
+        document.getElementById('option_type').removeAttribute('disabled');
     }
 
     function hideAddForm() {
         document.getElementById('addForm').classList.remove('visible');
         document.getElementById('option_name').value = '';
         document.getElementById('option_desc').value = '';
-        document.getElementById('option_value').value = '';
         document.getElementById('option_tab').value = '';
+        document.getElementById('option_type').value = 'textarea';
+        document.getElementById('option_variants').value = '';
+        document.getElementById('option_type').removeAttribute('disabled');
+        onTypeChange();
     }
 
-    function editOption(name, value, desc, tab) {
+    function editOption(data) {
         showAddForm();
-        document.getElementById('option_name').value = name;
+        document.getElementById('addFormTitle').textContent = MSG.editTitle;
+        document.getElementById('option_name').value = data.name || '';
         document.getElementById('option_name').setAttribute('readonly', 'readonly');
-        document.getElementById('option_desc').value = desc;
-        document.getElementById('option_value').value = value;
-        document.getElementById('option_tab').value = tab;
+        document.getElementById('option_desc').value = data.desc || '';
+        document.getElementById('option_tab').value = data.tab || '';
+        document.getElementById('option_type').value = data.type || 'textarea';
+        document.getElementById('option_variants').value = data.variants || '';
+        onTypeChange();
+        renderValueControl(data.type || 'textarea', data.value || '', data.variants || '');
     }
 
     function resetTabForm() {
@@ -481,7 +715,7 @@ function renderOptionsTable($options, $tabs, $currentTab) {
         document.getElementById('edit_tab_id').value = '';
         document.getElementById('tab_name').value = '';
         document.getElementById('tab_sort').value = '500';
-        document.getElementById('btnAddTab').value = '<?= Loc::getMessage('CUSTOM_SETTINGS_BTN_ADD_TAB') ?>';
+        document.getElementById('btnAddTab').value = MSG.addTab;
         document.getElementById('btnCancelTab').style.display = 'none';
     }
 
@@ -490,10 +724,31 @@ function renderOptionsTable($options, $tabs, $currentTab) {
         document.getElementById('edit_tab_id').value = id;
         document.getElementById('tab_name').value = name;
         document.getElementById('tab_sort').value = sort;
-        document.getElementById('btnAddTab').value = '<?= Loc::getMessage('CUSTOM_SETTINGS_BTN_SAVE') ?>';
+        document.getElementById('btnAddTab').value = MSG.save;
         document.getElementById('btnCancelTab').style.display = 'inline-block';
         document.getElementById('tab_name').focus();
     }
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttr(str) {
+        return escapeHtml(str).replace(/\n/g, '&#10;');
+    }
+
+    document.getElementById('option_variants').addEventListener('change', function () {
+        if (document.getElementById('option_type').value === 'select') {
+            renderValueControl('select', getCurrentValue(), this.value);
+        }
+    });
+
+    onTypeChange();
 </script>
 
 <?php
