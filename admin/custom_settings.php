@@ -24,6 +24,7 @@ $FIELD_TYPES = [
     'number' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_NUMBER'),
     'password' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_PASSWORD'),
     'select' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_SELECT'),
+    'image' => Loc::getMessage('CUSTOM_SETTINGS_TYPE_IMAGE'),
 ];
 
 $RIGHT = $APPLICATION->GetGroupRight($module_id);
@@ -83,6 +84,55 @@ function formatOptionValueForDisplay($type, $value)
     }
 }
 
+function saveSettingsImage($moduleId, $optionName)
+{
+    $currentId = (int)Option::get($moduleId, $optionName, '0');
+    $delete = (($_POST['option_image_delete'] ?? '') === 'Y');
+    $file = $_FILES['option_image'] ?? null;
+
+    if (is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+        if ((int)$file['error'] !== UPLOAD_ERR_OK) {
+            return ['error' => Loc::getMessage('CUSTOM_SETTINGS_IMAGE_SAVE_ERROR'), 'value' => $currentId > 0 ? (string)$currentId : ''];
+        }
+
+        $check = CFile::CheckImageFile($file, 0, 0, 0, ['jpg', 'jpeg', 'png', 'gif', 'webp']);
+        if ($check !== '') {
+            return ['error' => $check, 'value' => $currentId > 0 ? (string)$currentId : ''];
+        }
+
+        $file['MODULE_ID'] = $moduleId;
+        $fileId = (int)CFile::SaveFile($file, 'custom.settings');
+        if ($fileId <= 0) {
+            return ['error' => Loc::getMessage('CUSTOM_SETTINGS_IMAGE_SAVE_ERROR'), 'value' => $currentId > 0 ? (string)$currentId : ''];
+        }
+
+        if ($currentId > 0 && $currentId !== $fileId) {
+            CFile::Delete($currentId);
+        }
+
+        return ['error' => '', 'value' => (string)$fileId];
+    }
+
+    if ($delete && $currentId > 0) {
+        CFile::Delete($currentId);
+        return ['error' => '', 'value' => ''];
+    }
+
+    return ['error' => '', 'value' => $currentId > 0 ? (string)$currentId : ''];
+}
+
+function deleteSettingsImage($moduleId, $optionName)
+{
+    if (Option::get($moduleId, $optionName . '__type', '') !== 'image') {
+        return;
+    }
+
+    $fileId = (int)Option::get($moduleId, $optionName, '0');
+    if ($fileId > 0) {
+        CFile::Delete($fileId);
+    }
+}
+
 function parseSelectVariants($variantsRaw)
 {
     $parts = preg_split('/[\r\n;]+/', (string)$variantsRaw);
@@ -99,6 +149,7 @@ function parseSelectVariants($variantsRaw)
 // Обработка действий
 $action = $_REQUEST['action'] ?? '';
 $activeTab = $_REQUEST['active_tab'] ?? '';
+$saveError = '';
 
 if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
     switch ($action) {
@@ -123,6 +174,19 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
             }
 
             if (!empty($optionName) && strpos($optionName, '__') === false) {
+                $previousType = Option::get($module_id, $optionName . $TYPE_SUFFIX, '');
+
+                if ($optionType === 'image') {
+                    $imageResult = saveSettingsImage($module_id, $optionName);
+                    if ($imageResult['error'] !== '') {
+                        $saveError = $imageResult['error'];
+                        break;
+                    }
+                    $optionValue = $imageResult['value'];
+                } elseif ($previousType === 'image') {
+                    deleteSettingsImage($module_id, $optionName);
+                }
+
                 Option::set($module_id, $optionName, $optionValue);
                 Option::set($module_id, $optionName . $DESC_SUFFIX, $optionDesc);
                 Option::set($module_id, $optionName . $TAB_SUFFIX, $optionTab);
@@ -140,6 +204,7 @@ if ($REQUEST_METHOD === 'POST' && check_bitrix_sessid() && $RIGHT >= 'W') {
             $optionName = $_POST['option_name'] ?? '';
             $returnTab = $_POST['return_tab'] ?? '';
             if (!empty($optionName)) {
+                deleteSettingsImage($module_id, $optionName);
                 Option::delete($module_id, ['name' => $optionName]);
                 Option::delete($module_id, ['name' => $optionName . $DESC_SUFFIX]);
                 Option::delete($module_id, ['name' => $optionName . $TAB_SUFFIX]);
@@ -232,6 +297,9 @@ if (($_GET['tab_saved'] ?? '') === 'Y') {
 if (($_GET['tab_deleted'] ?? '') === 'Y') {
     CAdminMessage::ShowNote(Loc::getMessage('CUSTOM_SETTINGS_TAB_DELETED'));
 }
+if ($saveError !== '') {
+    CAdminMessage::ShowMessage($saveError);
+}
 
 $tabs = getTabs($module_id, $TABS_KEY);
 
@@ -320,6 +388,8 @@ if ($activeTab === '') {
     .no-options { color: #999; padding: 20px; text-align: center; }
     .tab-add-form { background: #fff; padding: 15px; border: 1px solid #e0e8ea; border-radius: 4px; margin-bottom: 20px; }
     .checkbox-value-wrap { display: flex; align-items: center; gap: 8px; }
+    .image-preview img,
+    .settings-table .option-image { display: block; max-width: 160px; max-height: 70px; }
 
     .usage-help { background: #fff; border: 1px solid #e0e8ea; border-radius: 4px; margin-bottom: 20px; }
     .usage-help-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 16px; border: 0; background: #f5f9f9; cursor: pointer; text-align: left; font-size: 14px; font-weight: bold; color: #333; box-sizing: border-box; }
@@ -353,6 +423,7 @@ if ($activeTab === '') {
             <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_CHECKBOX') ?></li>
             <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_NUMBER') ?></li>
             <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_SELECT') ?></li>
+            <li><?= Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPE_IMAGE') ?></li>
         </ul>
         <pre><?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_USAGE_TYPES_CODE')) ?></pre>
 
@@ -370,7 +441,7 @@ if ($activeTab === '') {
 <!-- Форма добавления настройки -->
 <div id="addForm" class="add-form">
     <h3 id="addFormTitle"><?= Loc::getMessage('CUSTOM_SETTINGS_ADD_OPTION') ?></h3>
-    <form method="POST" action="<?= $APPLICATION->GetCurPage() ?>" id="optionForm">
+    <form method="POST" action="<?= $APPLICATION->GetCurPage() ?>" id="optionForm" enctype="multipart/form-data">
         <?= bitrix_sessid_post() ?>
         <input type="hidden" name="action" value="save">
 
@@ -545,6 +616,10 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
             <?php
             $type = $data['type'] ?? 'textarea';
             $displayValue = formatOptionValueForDisplay($type, $data['value']);
+            $imageSrc = '';
+            if ($type === 'image' && (int)$data['value'] > 0) {
+                $imageSrc = (string)CFile::GetPath((int)$data['value']);
+            }
             $editPayload = htmlspecialchars(json_encode([
                 'name' => $name,
                 'value' => $data['value'],
@@ -552,13 +627,22 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
                 'tab' => $data['tab'],
                 'type' => $type,
                 'variants' => $data['variants'] ?? '',
+                'imageSrc' => $imageSrc,
             ], JSON_UNESCAPED_UNICODE), ENT_QUOTES);
             ?>
             <tr>
                 <td><strong><?= htmlspecialchars($name) ?></strong></td>
                 <td class="option-type"><?= htmlspecialchars($FIELD_TYPES[$type] ?? $type) ?></td>
                 <td class="option-desc"><?= htmlspecialchars($data['desc']) ?></td>
-                <td class="option-value"><?= htmlspecialchars($displayValue) ?></td>
+                <td class="option-value">
+                    <?php if ($imageSrc !== ''): ?>
+                        <img class="option-image" src="<?= htmlspecialchars($imageSrc) ?>" alt="">
+                    <?php elseif ($type === 'image'): ?>
+                        <?= htmlspecialchars(Loc::getMessage('CUSTOM_SETTINGS_IMAGE_EMPTY')) ?>
+                    <?php else: ?>
+                        <?= htmlspecialchars($displayValue) ?>
+                    <?php endif; ?>
+                </td>
                 <td>
                     <button type="button" class="btn-action" onclick='editOption(<?= $editPayload ?>)'>
                         <?= Loc::getMessage('CUSTOM_SETTINGS_BTN_EDIT') ?>
@@ -586,8 +670,12 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         addTitle: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_ADD_OPTION')) ?>,
         editTitle: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_EDIT_OPTION')) ?>,
         addTab: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_BTN_ADD_TAB')) ?>,
-        save: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_BTN_SAVE')) ?>
+        save: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_BTN_SAVE')) ?>,
+        imageDelete: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_IMAGE_DELETE')) ?>,
+        imageNote: <?= json_encode(Loc::getMessage('CUSTOM_SETTINGS_IMAGE_NOTE')) ?>
     };
+
+    var currentImageSrc = '';
 
     function toggleUsageHelp() {
         var box = document.getElementById('usageHelp');
@@ -629,9 +717,10 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         return field ? field.value : '';
     }
 
-    function renderValueControl(type, value, variantsRaw) {
+    function renderValueControl(type, value, variantsRaw, imageSrc) {
         var wrap = document.getElementById('valueControl');
         var html = '';
+        imageSrc = imageSrc || '';
 
         if (type === 'checkbox') {
             html =
@@ -663,6 +752,18 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         } else if (type === 'password') {
             html = '<input type="password" id="option_value" name="option_value" value="' + escapeAttr(value) +
                 '" placeholder="' + escapeAttr(MSG.valueHint) + '" autocomplete="new-password">';
+        } else if (type === 'image') {
+            html = '';
+            if (imageSrc) {
+                html += '<div class="image-preview"><img src="' + escapeAttr(imageSrc) + '" alt=""></div>';
+            }
+            html += '<input type="file" id="option_image" name="option_image" accept="image/jpeg,image/png,image/gif,image/webp">';
+            html += '<input type="hidden" id="option_value" name="option_value" value="' + escapeAttr(value) + '">';
+            if (value) {
+                html += '<label class="checkbox-value-wrap"><input type="checkbox" name="option_image_delete" value="Y"> ' +
+                    escapeHtml(MSG.imageDelete) + '</label>';
+            }
+            html += '<small>' + escapeHtml(MSG.imageNote) + '</small>';
         } else {
             html = '<textarea id="option_value" name="option_value" placeholder="' + escapeAttr(MSG.valueHint) + '">' +
                 escapeHtml(value) + '</textarea>';
@@ -675,7 +776,10 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         var type = document.getElementById('option_type').value;
         var variantsRow = document.getElementById('variantsRow');
         variantsRow.style.display = (type === 'select') ? 'block' : 'none';
-        renderValueControl(type, getCurrentValue(), document.getElementById('option_variants').value);
+        if (type !== 'image') {
+            currentImageSrc = '';
+        }
+        renderValueControl(type, getCurrentValue(), document.getElementById('option_variants').value, currentImageSrc);
     }
 
     function showAddForm() {
@@ -694,6 +798,7 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         document.getElementById('option_type').value = 'textarea';
         document.getElementById('option_variants').value = '';
         document.getElementById('option_type').removeAttribute('disabled');
+        currentImageSrc = '';
         onTypeChange();
     }
 
@@ -706,8 +811,9 @@ function renderOptionsTable($options, $FIELD_TYPES, $currentTab)
         document.getElementById('option_tab').value = data.tab || '';
         document.getElementById('option_type').value = data.type || 'textarea';
         document.getElementById('option_variants').value = data.variants || '';
+        currentImageSrc = data.imageSrc || '';
         onTypeChange();
-        renderValueControl(data.type || 'textarea', data.value || '', data.variants || '');
+        renderValueControl(data.type || 'textarea', data.value || '', data.variants || '', currentImageSrc);
     }
 
     function resetTabForm() {

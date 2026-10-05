@@ -38,8 +38,13 @@ $MESS['CUSTOM_SETTINGS_TYPE_CHECKBOX'] = 'Флажок (checkbox)';
 $MESS['CUSTOM_SETTINGS_TYPE_NUMBER'] = 'Число (number)';
 $MESS['CUSTOM_SETTINGS_TYPE_PASSWORD'] = 'Пароль (password)';
 $MESS['CUSTOM_SETTINGS_TYPE_SELECT'] = 'Список (select)';
+$MESS['CUSTOM_SETTINGS_TYPE_IMAGE'] = 'Изображение (image)';
 $MESS['CUSTOM_SETTINGS_CHECKBOX_YES'] = 'Да';
 $MESS['CUSTOM_SETTINGS_CHECKBOX_NO'] = 'Нет';
+$MESS['CUSTOM_SETTINGS_IMAGE_DELETE'] = 'Удалить изображение';
+$MESS['CUSTOM_SETTINGS_IMAGE_NOTE'] = 'JPG, PNG, GIF или WEBP. При редактировании новый файл заменяет текущий.';
+$MESS['CUSTOM_SETTINGS_IMAGE_SAVE_ERROR'] = 'Не удалось сохранить изображение';
+$MESS['CUSTOM_SETTINGS_IMAGE_EMPTY'] = 'Файл не загружен';
 
 // Вкладки
 $MESS['CUSTOM_SETTINGS_NO_TAB_TITLE'] = 'Общие';
@@ -91,10 +96,14 @@ $MESS['CUSTOM_SETTINGS_USAGE_TYPE_TEXT'] = '<code>text</code> / <code>textarea</
 $MESS['CUSTOM_SETTINGS_USAGE_TYPE_CHECKBOX'] = '<code>checkbox</code> — строка <code>Y</code> или <code>N</code>';
 $MESS['CUSTOM_SETTINGS_USAGE_TYPE_NUMBER'] = '<code>number</code> — число в виде строки, при необходимости приведите к <code>(int)</code> / <code>(float)</code>';
 $MESS['CUSTOM_SETTINGS_USAGE_TYPE_SELECT'] = 'для <code>select</code> в Option хранится выбранный вариант';
+$MESS['CUSTOM_SETTINGS_USAGE_TYPE_IMAGE'] = '<code>image</code> — в Option хранится ID файла. Путь к картинке: <code>CFile::GetPath($fileId)</code>';
 $MESS['CUSTOM_SETTINGS_USAGE_TYPES_CODE'] = <<<'CODE'
 $enabled = Option::get($moduleId, 'feature_enabled', 'N') === 'Y';
 $limit = (int)Option::get($moduleId, 'items_limit', '10');
 $mode = Option::get($moduleId, 'display_mode', 'list');
+
+$fileId = (int)Option::get($moduleId, 'site_logo', '0');
+$logo = $fileId > 0 ? CFile::GetPath($fileId) : '';
 
 if ($enabled) {
     // ...
